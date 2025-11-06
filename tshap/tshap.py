@@ -1,175 +1,166 @@
 import numpy as np
-from scipy.signal import find_peaks
+#from scipy.signal import find_peaks
 
-def get_np_window_mask(series_length, window_start, window_length):
-    mask = np.zeros((1, series_length))
-    if window_start >= 0:
-        mask[...,window_start:(window_start + window_length)] = 1
-    else:
-        mask[...,:(window_length + window_start)] = 1
-    return mask
 
-def tshap_window_explanation_pi(fnc, input_sample, baselines, window_length = 20, stride = 5, return_window_scores = False):    
+
+class TSHAPExplainer:
+
+    def __init__(self, window_length = 20, stride = 5, interpolation = True, roi = True):
+        self.window_length = window_length
+        self.stride = stride
+        self.interpolation = interpolation
+        self.roi = roi
+        
+    def _get_window_mask(self, series_shape, window_channel, window_start, window_length):
+        mask = np.zeros(series_shape)
+        if window_start >= 0:
+            mask[window_channel,window_start:(window_start + window_length)] = 1
+        else:
+            mask[window_channel,:(window_start + window_length)] = 1
+        return mask
+
+    def _explain_instance(self, fnc, input_sample, baselines):
+
+        # all_samples = np.array([input_sample])
+        n_channels, series_length = input_sample.shape        
+        
+        wd_pos = [(p,ws) for p in range(n_channels) for ws in range(0, min(series_length, series_length- self.window_length + self.stride), self.stride)]    
+        wd_scores = self._calculate_window_attrib_scores(fnc, input_sample, baselines, wd_pos)
+        
+
+        reshaped_window_scores = np.zeros(input_sample.shape)
+        for i in range(len(wd_pos)):
+            ch, window_start = wd_pos[i]
+            
+            if self.interpolation and i > 0 and wd_pos[i][0] == wd_pos[i-1][0]: # not first window and same channel                 
+                last_ws = wd_pos[i-1][1]
+                reshaped_window_scores[ch, last_ws: window_start + 1] = np.linspace(wd_scores[i-1], wd_scores[i], self.stride + 1)
+            else:
+                reshaped_window_scores[ch, window_start] = wd_scores[i]
+
+
+        window_exp = np.zeros(input_sample.shape)
+
+        for c in range(n_channels):
+            # for i in range(series_length - self.window_length + 1):
+            for i in range(series_length):
+                window_exp[c, i: i + self.window_length] += reshaped_window_scores[c, i] / (self.window_length * min(i+1,self.stride))
+        
+        return window_exp, reshaped_window_scores
     
-    all_samples = np.array([input_sample])
-    sl = input_sample.shape[-1]
-    
-    wd_pos = [ws for ws in range(0, sl-window_length + stride,stride)]    
-    bsize = len(baselines)
-    
-    all_samples = np.vstack((all_samples, baselines))
+    def _calculate_window_attrib_scores(self, fnc, input_sample, baselines, window_positions):
+        all_samples = np.array([input_sample])
+        payout_pos = [0 for _ in range(len(window_positions))]
+        wd_scores = np.zeros(len(window_positions))
+        bsize = len(baselines)        
+        all_samples = np.vstack((all_samples, baselines))
 
-    for ws in wd_pos:
-        feature_mask = get_np_window_mask(sl, ws, window_length)
-        for baseline in baselines:            
-            fused_samples = np.array([        
-            input_sample * (1 - feature_mask) + baseline * feature_mask,
-            input_sample * feature_mask + baseline * (1 - feature_mask),                    
-            ])
-            all_samples = np.vstack((all_samples, fused_samples))
+        for i,ws in enumerate(window_positions):
+            if len(ws) == 2:
+                feature_mask = self._get_window_mask(input_sample.shape, ws[0], ws[1], self.window_length) # default window length
+            else:
+                feature_mask = self._get_window_mask(input_sample.shape, ws[0], ws[1], ws[2]) # custom window length
+            payout_pos[i] = all_samples.shape[0]
+            for baseline in baselines:            
+                fused_samples = np.array([        
+                input_sample * (1 - feature_mask) + baseline * feature_mask,
+                input_sample * feature_mask + baseline * (1 - feature_mask),                    
+                ])
+                all_samples = np.vstack((all_samples, fused_samples))
+      
+        payout = fnc(all_samples)        
 
-    #payout = clf.predict_proba(all_samples)[:,0]
-    payout = fnc(all_samples)
-
-    wd_scores = np.zeros(sl)
-
-    for i in range(sl):
-        if i%stride == 0 and i <= wd_pos[-1]:
-            cur_pos = bsize + (i//stride)*bsize*2
+        for i, pp in enumerate(payout_pos):            
             val = 0
             for ii in range(bsize):
-                val += ((payout[0] - payout[cur_pos + ii*2 +1]) + (payout[cur_pos +ii*2+2] - payout[1 + ii]))/2
+                val += ((payout[0] - payout[pp + ii*2]) + (payout[pp +ii*2+1] - payout[1 + ii]))/2
             val = val/bsize 
-            if i > 0:
-                wd_scores[i-stride:i+1] = np.linspace(wd_scores[i-stride],val,stride + 1)
-            else:
-                wd_scores[i] = val
-
-    
-
-    interpolated_exp = np.zeros(len(wd_scores))
-    for i in range(len(wd_scores)):
-        interpolated_exp[i: i + window_length] += wd_scores[i] / (window_length * min(i+1,stride))
-    
-    
-    if return_window_scores:
-        return interpolated_exp, np.arange(0, sl), wd_scores
-    else:
-        return interpolated_exp
-    
-
-
-            
+            wd_scores[i] = val
         
-def indi_window_shap_attrib(fnc, input_sample, baselines, window_start, window_end):
-    all_samples = np.array([input_sample])
-    sl = input_sample.shape[-1]    
-    bsize = len(baselines)   
-    all_samples = np.vstack((all_samples, baselines))
+        return wd_scores
 
+
+    def _explain_dataset(self, fnc, X, baselines):
+        X_attribs = np.zeros(X.shape)
+        X_roi_attribs = np.zeros(X.shape)
+        for i in range(X.shape[0]):
+            X_attribs[i] , window_scores = self._explain_instance(fnc, X[i], baselines)
+            if self.roi:
+                rois = self._find_rois_v2(window_scores)                   
+                roi_attribs = self._calculate_window_attrib_scores(fnc, X[i], baselines, rois)                
+                for roi,attrb in zip(rois, roi_attribs):
+                    X_roi_attribs[i, roi[0], roi[1]: roi[1] + roi[2] + 1] = attrb / (roi[2] + 1)
+           
+        return X_attribs, X_roi_attribs
     
-    feature_mask = get_np_window_mask(sl, window_start, window_end - window_start)
-    for baseline in baselines:            
-        fused_samples = np.array([        
-        input_sample * (1 - feature_mask) + baseline * feature_mask,
-        input_sample * feature_mask + baseline * (1 - feature_mask),                    
-        ])
-        all_samples = np.vstack((all_samples, fused_samples))
 
-    payout = fnc(all_samples)
-    val = 0
-    for i in range(bsize):
-        val += ((payout[0] - payout[bsize + i*2 +1]) + (payout[bsize +i*2+2] - payout[1 + i]))/2
-    val = val/bsize        
+    def _find_rois_v2(self, wd_scores):
+
+        abs_wd_scores = np.abs(wd_scores)
+        rel_threshold = min(0.05*np.max(abs_wd_scores), np.percentile(abs_wd_scores,q=50))
+        
+        thresholded_scores =  np.zeros_like(wd_scores)
+        thresholded_scores[wd_scores > rel_threshold] = 1
+        thresholded_scores[wd_scores < -rel_threshold] = -1
+
+        # rois = [[] for _ in range(thresholded_scores.shape[0])]
+        rois = []
+        for c in range(thresholded_scores.shape[0]):
+
+            # group windows            
+            candidate_start = 0 
+            zones = []           
+            while candidate_start < thresholded_scores.shape[1]:
+                current_zone = thresholded_scores[c, candidate_start]
+                candidate_end = candidate_start
+                for ci in range(candidate_start + 1, thresholded_scores.shape[1]):
+                    if thresholded_scores[c, ci] == current_zone:
+                            candidate_end = ci
+                    else:
+                        break
+                if current_zone != 0 or (candidate_end - candidate_start) > 3:
+                    # if zones and current_zone == zones[-1][2]:
+                    #     #print("Merging zones")
+                    #     zones[-1][1] = candidate_end
+                    # else:
+                    zones.append([candidate_start, candidate_end, current_zone])
+                # print(zones)
+                candidate_start = candidate_end + 1
+            
+            zones.append([-1,-1,0]) # dummy zone
+
+            for zi in range(len(zones)-1):                
+                if zones[zi][2] != 0:                    
+                    roi_start = zones[zi][0] + self.window_length//2 if \
+                            zones[zi-1][2]  * zones[zi][2] < 0 else zones[zi][0] + self.window_length
+                    roi_end = zones[zi][1] + self.window_length//2 if \
+                            zones[zi+1][2] * zones[zi][2] < 0 else zones[zi][1] 
+                    
+                    if roi_end > roi_start:
+                            #rois[c].append([roi_start, roi_end])
+                        rois.append([c, roi_start, roi_end - roi_start])
+                    
+            
+            # determine ROIs from zones
+           
+
+        return rois             
+
+        
     
-    return val
+    def explain(self, X, baselines, model, clf_targets = None):
 
-def find_rois(wd_pos, wd_scores, window_len):
-    abs_wd_scores = np.abs(wd_scores)
-    rel_threshold = min(0.05*np.max(abs_wd_scores), np.percentile(abs_wd_scores,q=50))
-    # print(0.1*np.max(abs_wd_scores))
-    # print(np.percentile(abs_wd_scores,q=20))
-    # rel_threshold = 0.05*np.max(abs_wd_scores)
-    wd_count = len(wd_pos)
-    zones = []
-    i = 0
-
-    while i < wd_count:
-        if abs_wd_scores[i] > rel_threshold:        
-            candidate_start = i
-            candidate_end = i
-            for ci in range(i + 1, wd_count):
-                if abs_wd_scores[ci] > rel_threshold and wd_scores[ci] * wd_scores[candidate_start] > 0:
-                    candidate_end = ci
-                else:
-                    break
-            
-            zones.append([candidate_start, candidate_end, 1 if wd_scores[candidate_start] > 0 else -1])       
-
-        else:
-            candidate_start = i
-            candidate_end = i
-            for ci in range(i+1, wd_count):
-                if abs_wd_scores[ci] <= rel_threshold:
-                    candidate_end = ci
-                else:
-                    break
-            if candidate_end - candidate_start > 3:
-                zones.append([candidate_start, candidate_end, 0])
-        i = candidate_end + 1
-        
-    #print(zones)
-    rois = []
-
-    for i in range(len(zones)):
-        if zones[i][2] != 0:
-            if i == 0:
-                last_zone = 0
+        if callable(model):
+            predict_fnc = model
+        elif hasattr(model, 'predict_proba') and callable(model.predict_proba): # classification
+            if clf_targets is None:
+                predict_fnc = lambda X: model.predict_proba(X)[:,1]
             else:
-                last_zone = zones[i-1][2]
-            
-            if i == len(zones) - 1:
-                next_zone = 0
-            else:
-                next_zone = zones[i+1][2]
-            
-            if last_zone * zones[i][2] >= 0:
-                roi_start= wd_pos[zones[i][0]] + window_len
-            else:
-                roi_start= wd_pos[zones[i][0]] + window_len//2
-            
-            if next_zone * zones[i][2] >= 0:
-                roi_end = wd_pos[zones[i][1]]
-            else:
-                roi_end = wd_pos[zones[i][1]] + window_len//2
-            
-            if roi_end > roi_start:
-                rois.append([roi_start, roi_end])
-    return rois
+                target_index = np.argmax(model.classes_ == clf_targets)
+                predict_fnc = lambda X: model.predict_proba(X)[:,target_index]
+        else:            
+            predict_fnc = model.predict # should return a scalar for regression
 
-def tshap_explanation_single_instance(fnc, input_sample, baselines, window_length = 20, stride = 5, roi = True):
-    sm, window_pos, window_scores =tshap_window_explanation_pi(fnc, input_sample, baselines, window_length = window_length, stride = stride, return_window_scores=True)
-    roi_sm = np.zeros(sm.shape)
-    if roi:
-        rois = find_rois(window_pos,window_scores,window_length)
-        
-        for r in rois:
-            attrib = indi_window_shap_attrib(fnc, input_sample, baselines, r[0], r[1])
-            roi_sm[...,r[0]:r[1] + 1] = attrib / (r[1] - r[0] + 1) 
-    
-    return sm, roi_sm
-
-def tshap_explanation(fnc, X, baselines, window_length = 20, stride = 5, roi = True):
-    if fnc.__name__ == 'predict_proba':
-        final_fnc = lambda X: fnc(X)[:,1] # probability of positive class
-    else:
-        final_fnc = fnc
-        
-    X_attribs = np.zeros(X.shape)
-    X_roi_attribs = np.zeros(X.shape)
-    for i in range(X.shape[0]):
-        X_attribs[[i]], X_roi_attribs[[i]] = tshap_explanation_single_instance(final_fnc, X[i], baselines, window_length = window_length, stride = stride, roi = roi)
-        
-
-    
-    return X_attribs, X_roi_attribs
+        window_exp, roi_exp = self._explain_dataset(predict_fnc, X, baselines)
+     
+        return window_exp, roi_exp
