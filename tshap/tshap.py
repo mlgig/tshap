@@ -80,10 +80,26 @@ class TSHAPExplainer:
         return wd_scores
 
 
-    def _explain_dataset(self, fnc, X, baselines):
+    def _explain_dataset(self, model, X, baselines, clf_targets=None):
+
+        if callable(model):
+            predict_fnc = model
+        elif hasattr(model, 'predict_proba') and callable(model.predict_proba): # classification            
+            if clf_targets is None:
+                predict_fnc = lambda X: model.predict_proba(X)[:,1]
+            else:
+                predict_fnc = model.predict_proba
+        else:            
+            predict_fnc = model.predict # should return a scalar for regression
+
         X_attribs = np.zeros(X.shape)
         X_roi_attribs = np.zeros(X.shape)
         for i in range(X.shape[0]):
+            if clf_targets is not None:
+                fnc = lambda data: predict_fnc(data)[:, np.argmax(model.classes_ == clf_targets[i])]
+            else:
+                fnc = predict_fnc
+            
             X_attribs[i] , window_scores = self._explain_instance(fnc, X[i], baselines)
             if self.roi:
                 rois = self._find_rois_v2(window_scores)                   
@@ -148,19 +164,8 @@ class TSHAPExplainer:
 
         
     
-    def explain(self, X, baselines, model, clf_targets = None):
+    def explain(self, X, baselines, model, clf_targets = None):       
 
-        if callable(model):
-            predict_fnc = model
-        elif hasattr(model, 'predict_proba') and callable(model.predict_proba): # classification
-            if clf_targets is None:
-                predict_fnc = lambda X: model.predict_proba(X)[:,1]
-            else:
-                target_index = np.argmax(model.classes_ == clf_targets)
-                predict_fnc = lambda X: model.predict_proba(X)[:,target_index]
-        else:            
-            predict_fnc = model.predict # should return a scalar for regression
-
-        window_exp, roi_exp = self._explain_dataset(predict_fnc, X, baselines)
+        window_exp, roi_exp = self._explain_dataset(model, X, baselines, clf_targets=clf_targets)
      
         return window_exp, roi_exp
