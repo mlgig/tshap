@@ -1,3 +1,4 @@
+from random import sample
 import numpy as np
 import matplotlib.pyplot as plt
 #from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
@@ -145,3 +146,107 @@ def plot_saliency_map_and_attributions(sample, attributions, attribs_names ,titl
 
     plt.show()
 
+
+
+
+def plot_multivariate_sample_attributions(sample, attribution, channel_names = [], title = 'Saliency map', colorbar = True):    
+    
+
+    if len(sample.shape) == 1: # if the univariate input is a 1D array
+        sample = np.expand_dims(sample, axis=0)
+        attribution = np.expand_dims(attribution, axis=0)
+
+    n_channels = sample.shape[0]     
+    fig, axs = plt.subplots(n_channels, 2, sharex=True, figsize=(12, 1.5*n_channels),constrained_layout=True)
+    x = np.array([ii for ii in range(sample.shape[-1])])
+    
+    for p in range(n_channels):
+        y = sample[p,:]
+        sy = attribution[p]
+
+        cap = max(abs(sy.min()), abs(sy.max()),0.0001)
+        cvals = [-cap, 0, cap]
+        # if saliency.min() < 0:
+        #     cvals  = [saliency.min(), 0, saliency.max()]
+        # else:
+        #     cvals  = [0,0, saliency.max()]
+        colors = ["blue","gray","red"]
+        norm=plt.Normalize(min(cvals),max(cvals))
+        tuples = list(zip(map(norm,cvals), colors))
+        cmap = LinearSegmentedColormap.from_list("", tuples)
+
+        points = np.array([x, y]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+        lc = LineCollection(segments, cmap=cmap, norm=norm)
+        lc.set_array(sy)
+        lc.set_linewidth(2)
+
+
+        current_ax = axs[p][0]
+
+        line = current_ax.add_collection(lc)
+        current_ax.set_xlim(x.min(), x.max())
+        current_ax.set_ylim(y.min() - 1, y.max()+1)
+        if len(channel_names) >= p + 1:
+            current_ax.set_ylabel(channel_names[p])
+
+        axs[p][1].plot(x,sy)
+        axs[p][1].axhline(0.0, linestyle='dotted', color='red')
+
+
+
+    
+
+    fig.align_ylabels(axs)
+
+
+
+    plt.show()
+	
+
+    # x = np.array([ii for ii in range(sample.shape[-1])])
+
+	# cap = max(abs(attribution.min()), abs(attribution.max()))
+	# cvals = [-cap, 0, cap]
+	# # if saliency.min() < 0:
+	# #     cvals  = [saliency.min(), 0, saliency.max()]
+	# # else:
+	# #     cvals  = [0,0, saliency.max()]
+	# colors = ["blue","gray","red"]
+	# norm=plt.Normalize(min(cvals),max(cvals))
+	# tuples = list(zip(map(norm,cvals), colors))
+	# cmap = LinearSegmentedColormap.from_list("", tuples)
+
+
+	# fig, axs = plt.subplots(n_channels, 1, sharex=True, figsize=(8, 1*n_channels),constrained_layout=True)
+
+	# for p in range(sample.shape[0]):
+	# 	y = sample[p,:]
+	# 	sy = attribution[p,:]
+	# 	points = np.array([x, y]).T.reshape(-1, 1, 2)
+	# 	segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+	# 	lc = LineCollection(segments, cmap=cmap, norm=norm)
+	# 	lc.set_array(sy)
+	# 	lc.set_linewidth(2)
+
+
+	# 	current_ax = axs if sample.shape[0] == 1 else axs[p]
+
+	# 	line = current_ax.add_collection(lc)
+	# 	current_ax.set_xlim(x.min(), x.max())
+	# 	current_ax.set_ylim(y.min() - 1, y.max()+1)
+	# 	if len(channel_names) >= n_channels:
+	# 		current_ax.set_ylabel(channel_names[p])
+
+
+
+	# if colorbar:
+	# 	fig.colorbar(line, ax=axs, aspect= 50)
+
+	# fig.align_ylabels(axs)
+
+
+
+	# plt.show()
